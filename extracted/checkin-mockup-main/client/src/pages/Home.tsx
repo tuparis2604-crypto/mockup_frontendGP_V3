@@ -1,45 +1,37 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import {
-  ChevronRight,
-  TrendingUp,
-  Plus,
-  FileText,
-  Users,
+  ClipboardList,
+  MessageSquare,
+  Route,
   BarChart3,
   AlertCircle,
-  Zap,
-  CalendarDays,
-  MessageSquare,
   Clock,
+  ChevronRight,
+  History,
   Map,
+  GraduationCap,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import Card from "@/components/Card";
-import { Button } from "@/components/ui/button";
+import PageIntro from "@/components/PageIntro";
 import {
   getMe,
   logout,
   getHighestRole,
+  getRoleDisplayName,
   getActivePeriod,
   listCheckins,
+  getAssessmentCycles,
+  getProgressForms,
+  isGP,
+  isGestor,
+  isGestorAuxiliar,
+  getDeepFollowups,
 } from "@/lib/api";
-import type { User, DevelopmentPeriod, Checkin } from "@/lib/api";
-
-const mockAlerts = [
-  {
-    id: "1",
-    type: "warning",
-    title: "Baixo Registro em Comunicação",
-    description: "Você não registrou nada sobre Comunicação nas últimas 2 semanas.",
-  },
-  {
-    id: "2",
-    type: "success",
-    title: "Progresso em Liderança",
-    description: "Você acumulou 6 registros verdes em Liderança neste período.",
-  },
-];
+import type { User, DevelopmentPeriod, Checkin, AssessmentCycle, ProgressForm } from "@/lib/api";
 
 function periodProgress(startDate: string, endDate: string): number {
   const start = new Date(startDate).getTime();
@@ -55,6 +47,9 @@ export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [period, setPeriod] = useState<DevelopmentPeriod | null>(null);
   const [records, setRecords] = useState<Checkin[]>([]);
+  const [cycles, setCycles] = useState<AssessmentCycle[]>([]);
+  const [progressForms, setProgressForms] = useState<ProgressForm[]>([]);
+  const [deepFollowupCount, setDeepFollowupCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -63,12 +58,21 @@ export default function Home() {
         const currentUser = await getMe();
         if (currentUser) {
           setUser(currentUser);
-          const [p, r] = await Promise.all([
+          const [p, r, c, pf] = await Promise.all([
             getActivePeriod(currentUser.id),
             listCheckins({ user_id: currentUser.id }),
+            getAssessmentCycles({ year: 2026 }),
+            getProgressForms({ employee_id: currentUser.id }),
           ]);
           setPeriod(p);
           setRecords(r);
+          setCycles(c);
+          setProgressForms(pf);
+
+          if (isGP(currentUser.roles)) {
+            const followups = await getDeepFollowups();
+            setDeepFollowupCount(followups.filter((f) => f.status === "active").length);
+          }
         } else {
           setLocation("/login");
         }
@@ -93,227 +97,298 @@ export default function Home() {
 
   if (!user) return null;
 
-  const isManager = user.roles.includes("Gestor");
-  const isExecutive = user.roles.includes("RH") || user.roles.includes("Sócio");
+  const highestRole = getHighestRole(user.roles);
+  const displayRole = getRoleDisplayName(highestRole);
+  const isGPUser = isGP(user.roles);
+  const isGestorUser = isGestor(user.roles) || isGestorAuxiliar(user.roles);
 
   const draftCount = records.filter((r) => r.status === "draft").length;
-  const pendingMeetings = records.filter((r) => r.meeting_request?.status === "pending").length;
   const greenCount = records.filter((r) => r.flag === "green" && r.status === "published").length;
+  const redCount = records.filter((r) => r.flag === "red").length;
   const progress = period ? periodProgress(period.start_date, period.end_date) : 0;
+
+  const myCycle = cycles.find((c) => c.employee_id === user.id);
+  const pendingProgressForm = progressForms.find((f) => f.status === "not_started");
+
+  // Alertas calculados
+  const alerts: { type: "warning" | "critical" | "success"; title: string; description: string }[] = [];
+
+  if (draftCount > 0) {
+    alerts.push({
+      type: "warning",
+      title: `${draftCount} rascunho${draftCount > 1 ? "s" : ""} aguardando publicação`,
+      description: "Revise e publique quando estiver pronto.",
+    });
+  }
+  if (redCount > 0) {
+    alerts.push({
+      type: "critical",
+      title: `${redCount} check-in${redCount > 1 ? "s" : ""} de flag vermelha`,
+      description: "Registros críticos requerem atenção.",
+    });
+  }
+  if (myCycle?.self_review_status === "pending" || myCycle?.self_review_status === "not_started") {
+    alerts.push({
+      type: "warning",
+      title: "Autoavaliação pendente",
+      description: "Sua autoavaliação do ciclo ainda não foi enviada.",
+    });
+  }
+  if (pendingProgressForm) {
+    alerts.push({
+      type: "warning",
+      title: "Formulário quadrimestral não enviado",
+      description: "O formulário de avanço deste quadrimestre aguarda seu preenchimento.",
+    });
+  }
+  if (greenCount >= 3) {
+    alerts.push({
+      type: "success",
+      title: `${greenCount} check-ins verdes publicados`,
+      description: "Bom ritmo de registros positivos no período.",
+    });
+  }
+  if (isGPUser && deepFollowupCount > 0) {
+    alerts.push({
+      type: "warning",
+      title: `${deepFollowupCount} colaborador${deepFollowupCount > 1 ? "es" : ""} em acompanhamento profundo`,
+      description: "Verificar status dos acompanhamentos em andamento.",
+    });
+  }
+
+  const quickLinks = [
+    {
+      label: "Ciclo de Assessment",
+      description: "Etapas e status do ciclo anual",
+      path: "/ciclo-assessment",
+      icon: <ClipboardList size={20} className="text-accent" />,
+      show: true,
+    },
+    {
+      label: "Check-ins",
+      description: "Registros contínuos com flags",
+      path: "/checkins",
+      icon: <MessageSquare size={20} className="text-accent" />,
+      show: true,
+    },
+    {
+      label: "Jornada",
+      description: "Metas, direcionadores e ações",
+      path: "/jornada",
+      icon: <Route size={20} className="text-accent" />,
+      show: true,
+    },
+    {
+      label: "Histórico",
+      description: "Linha do tempo do ciclo",
+      path: "/historico",
+      icon: <History size={20} className="text-accent" />,
+      show: true,
+    },
+    {
+      label: "Pendências",
+      description: "Controle operacional por colaborador",
+      path: "/pendencias",
+      icon: <AlertCircle size={20} className="text-accent" />,
+      show: isGPUser,
+    },
+    {
+      label: "Dashboards",
+      description: "Visão organizacional",
+      path: "/dashboards",
+      icon: <BarChart3 size={20} className="text-accent" />,
+      show: isGPUser || isGestorUser,
+    },
+    {
+      label: "Mapa de Desenvolvimento",
+      description: "Visão integrada — em breve",
+      path: "/mapa-desenvolvimento",
+      icon: <Map size={20} className="text-muted-foreground" />,
+      show: true,
+      future: true,
+    },
+    {
+      label: "Treinamentos",
+      description: "Catálogo e trilhas",
+      path: "/treinamentos",
+      icon: <GraduationCap size={20} className="text-muted-foreground" />,
+      show: true,
+      future: true,
+    },
+  ].filter((l) => l.show);
 
   return (
     <DashboardLayout
       userName={user.name}
-      userRole={getHighestRole(user.roles)}
+      userRole={highestRole}
       onLogout={handleLogout}
     >
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-foreground mb-2">Bem-vindo, {user.name}!</h1>
-        <p className="text-muted-foreground">
-          Acompanhe seu desenvolvimento e registre fatos ao longo do período.
-        </p>
+      <div className="mb-3">
+        <h1 className="text-2xl font-bold text-foreground mb-1">Bem-vindo, {user.name}!</h1>
+        <p className="text-sm text-muted-foreground">{displayRole} · Ciclo 2026</p>
       </div>
 
-      {/* ── PERÍODO ATUAL ── */}
-      {period ? (
-        <Card className="mb-6">
+      <PageIntro text="Visão consolidada do ciclo de desenvolvimento, pendências, alertas e principais indicadores por perfil." />
+
+      {/* Ciclo atual / Período */}
+      {myCycle ? (
+        <Card className="mb-5">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <CalendarDays size={18} className="text-accent" />
-              <span className="font-semibold text-foreground">Período Ativo</span>
-              <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded-full">Em curso</span>
+              <ClipboardList size={16} className="text-accent" />
+              <span className="font-semibold text-foreground text-sm">Meu Ciclo 2026</span>
+              <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-xs font-medium rounded-full">
+                {myCycle.overall_status === "in_progress" ? "Em andamento" : myCycle.overall_status === "completed" ? "Concluído" : "Não iniciado"}
+              </span>
             </div>
             <button
-              onClick={() => setLocation("/progresso")}
+              onClick={() => setLocation("/ciclo-assessment")}
               className="text-xs text-accent hover:text-accent/80 flex items-center gap-1"
             >
               Ver detalhes <ChevronRight size={12} />
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-3 mb-3">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
+            <span>Etapa atual:</span>
+            <strong className="text-foreground">{myCycle.current_step}</strong>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
             <div className="text-center">
-              <p className="text-xl font-bold text-green-600">{greenCount}</p>
-              <p className="text-xs text-muted-foreground">Registros verdes</p>
+              <div className="flex items-center justify-center gap-1 mb-1">
+                <div className="w-2 h-2 rounded-full bg-green-500" />
+                <p className="text-lg font-bold text-green-700">{greenCount}</p>
+              </div>
+              <p className="text-xs text-muted-foreground">Check-ins verdes</p>
             </div>
             <div className="text-center">
-              <p className="text-xl font-bold text-amber-600">{draftCount}</p>
+              <div className="flex items-center justify-center gap-1 mb-1">
+                <Clock size={12} className="text-amber-500" />
+                <p className="text-lg font-bold text-amber-700">{draftCount}</p>
+              </div>
               <p className="text-xs text-muted-foreground">Rascunhos</p>
             </div>
             <div className="text-center">
-              <p className="text-xl font-bold text-purple-600">{pendingMeetings}</p>
-              <p className="text-xs text-muted-foreground">Pedidos de reunião</p>
+              <div className="flex items-center justify-center gap-1 mb-1">
+                <div className="w-2 h-2 rounded-full bg-red-500" />
+                <p className="text-lg font-bold text-red-700">{redCount}</p>
+              </div>
+              <p className="text-xs text-muted-foreground">Vermelhos</p>
             </div>
           </div>
 
-          <div className="w-full bg-secondary rounded-full h-2">
-            <div className="bg-accent rounded-full h-2 transition-all" style={{ width: `${progress}%` }} />
+          {period && (
+            <div className="mt-3">
+              <div className="w-full bg-secondary rounded-full h-1.5">
+                <div
+                  className="bg-accent rounded-full h-1.5 transition-all"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {progress}% · {new Date(period.start_date).toLocaleDateString("pt-BR")} – {new Date(period.end_date).toLocaleDateString("pt-BR")}
+              </p>
+            </div>
+          )}
+        </Card>
+      ) : period ? (
+        <Card className="mb-5">
+          <div className="flex items-center gap-2 mb-2">
+            <ClipboardList size={16} className="text-accent" />
+            <span className="font-semibold text-foreground text-sm">Período Ativo</span>
+          </div>
+          <div className="w-full bg-secondary rounded-full h-1.5 mt-2">
+            <div className="bg-accent rounded-full h-1.5" style={{ width: `${progress}%` }} />
           </div>
           <p className="text-xs text-muted-foreground mt-1">
             {progress}% · {new Date(period.start_date).toLocaleDateString("pt-BR")} – {new Date(period.end_date).toLocaleDateString("pt-BR")}
           </p>
         </Card>
       ) : (
-        <Card className="mb-6 border-dashed border-amber-200 bg-amber-50">
-          <p className="text-sm text-amber-900 font-medium mb-1">Nenhum período ativo</p>
-          <p className="text-xs text-amber-700">Solicite ao gestor o início do período de desenvolvimento.</p>
+        <Card className="mb-5 border-dashed border-amber-200 bg-amber-50">
+          <p className="text-sm text-amber-900 font-medium mb-1">Nenhum ciclo ativo</p>
+          <p className="text-xs text-amber-700">Solicite ao GP o início do ciclo de desenvolvimento.</p>
         </Card>
       )}
 
-      {/* ── PENDÊNCIAS ── */}
-      {(draftCount > 0 || pendingMeetings > 0) && (
-        <Card className="mb-6 bg-amber-50 border-amber-200">
-          <h2 className="text-sm font-bold text-amber-900 mb-3">Pendências</h2>
+      {/* Alertas */}
+      {alerts.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-bold text-foreground mb-3">Alertas e Pendências</h2>
           <div className="space-y-2">
-            {draftCount > 0 && (
-              <button
-                onClick={() => setLocation("/progresso")}
-                className="w-full flex items-center justify-between p-3 bg-white rounded-lg border border-amber-100 hover:border-amber-300 transition-colors text-left"
+            {alerts.slice(0, 4).map((alert, idx) => (
+              <div
+                key={idx}
+                className={`flex gap-3 p-3 rounded-lg border-l-4 ${
+                  alert.type === "critical"
+                    ? "bg-red-50 border-l-red-500"
+                    : alert.type === "warning"
+                    ? "bg-amber-50 border-l-amber-500"
+                    : "bg-green-50 border-l-green-500"
+                }`}
               >
-                <div className="flex items-center gap-2">
-                  <Clock size={16} className="text-amber-600" />
-                  <div>
-                    <p className="text-sm font-medium text-amber-900">
-                      {draftCount} rascunho{draftCount > 1 ? "s" : ""} aguardando publicação
-                    </p>
-                    <p className="text-xs text-amber-700">Revise e publique quando estiver pronto.</p>
-                  </div>
+                {alert.type === "critical" ? (
+                  <XCircle size={16} className="text-red-600 flex-shrink-0 mt-0.5" />
+                ) : alert.type === "success" ? (
+                  <CheckCircle2 size={16} className="text-green-600 flex-shrink-0 mt-0.5" />
+                ) : (
+                  <Clock size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                )}
+                <div>
+                  <p className={`font-semibold text-sm ${
+                    alert.type === "critical" ? "text-red-900" : alert.type === "success" ? "text-green-900" : "text-amber-900"
+                  }`}>
+                    {alert.title}
+                  </p>
+                  <p className={`text-xs mt-0.5 ${
+                    alert.type === "critical" ? "text-red-800" : alert.type === "success" ? "text-green-800" : "text-amber-800"
+                  }`}>
+                    {alert.description}
+                  </p>
                 </div>
-                <ChevronRight size={14} className="text-amber-400 flex-shrink-0" />
-              </button>
-            )}
-            {pendingMeetings > 0 && (
-              <button
-                onClick={() => setLocation("/progresso")}
-                className="w-full flex items-center justify-between p-3 bg-white rounded-lg border border-amber-100 hover:border-amber-300 transition-colors text-left"
-              >
-                <div className="flex items-center gap-2">
-                  <MessageSquare size={16} className="text-purple-600" />
-                  <div>
-                    <p className="text-sm font-medium text-amber-900">
-                      {pendingMeetings} pedido{pendingMeetings > 1 ? "s" : ""} de reunião pendente{pendingMeetings > 1 ? "s" : ""}
-                    </p>
-                    <p className="text-xs text-amber-700">Registros com solicitação de reunião aguardando reconhecimento.</p>
-                  </div>
-                </div>
-                <ChevronRight size={14} className="text-amber-400 flex-shrink-0" />
-              </button>
-            )}
+              </div>
+            ))}
           </div>
-        </Card>
+        </div>
       )}
 
-      {/* ── AVISOS ── */}
-      <div className="mb-8">
-        <h2 className="text-lg font-bold text-foreground mb-4">Avisos Recentes</h2>
-        <div className="space-y-3">
-          {mockAlerts.map((alert) => (
-            <div
-              key={alert.id}
-              className={`flex gap-3 p-4 rounded-lg border-l-4 ${
-                alert.type === "warning"
-                  ? "bg-amber-50 border-l-amber-500"
-                  : "bg-green-50 border-l-green-500"
+      {/* Navegação rápida */}
+      <div className="mb-6">
+        <h2 className="text-sm font-bold text-foreground mb-3">Navegação Rápida</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {quickLinks.map((link) => (
+            <button
+              key={link.path}
+              type="button"
+              onClick={() => setLocation(link.path)}
+              className={`flex items-start gap-3 p-4 rounded-lg border text-left transition-all hover:shadow-sm ${
+                link.future
+                  ? "border-dashed border-border/60 opacity-75 hover:opacity-100"
+                  : "border-border hover:border-accent/30"
               }`}
             >
-              <AlertCircle
-                size={20}
-                className={alert.type === "warning" ? "text-amber-600" : "text-green-600"}
-              />
-              <div>
-                <p className={`font-bold text-sm ${alert.type === "warning" ? "text-amber-900" : "text-green-900"}`}>
-                  {alert.title}
-                </p>
-                <p className={`text-xs mt-1 ${alert.type === "warning" ? "text-amber-800" : "text-green-800"}`}>
-                  {alert.description}
-                </p>
+              <div className="flex-shrink-0 mt-0.5">{link.icon}</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="font-semibold text-foreground text-sm leading-tight">{link.label}</p>
+                  {link.future && (
+                    <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-100 flex-shrink-0">
+                      V3
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">{link.description}</p>
               </div>
-            </div>
+              <ChevronRight size={14} className="text-muted-foreground flex-shrink-0 mt-0.5" />
+            </button>
           ))}
         </div>
-        <Button variant="outline" className="w-full mt-4" onClick={() => setLocation("/avisos")}>
-          Ver Todos os Avisos
-        </Button>
       </div>
 
-      {/* ── NAVEGAÇÃO RÁPIDA ── */}
-      <div className="mb-8">
-        <h2 className="text-lg font-bold text-foreground mb-4">Navegação Rápida</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setLocation("/progresso")}>
-            <div className="flex items-start justify-between mb-3">
-              <TrendingUp size={24} className="text-accent" />
-              <ChevronRight size={20} className="text-muted-foreground" />
-            </div>
-            <h3 className="font-bold text-foreground mb-1">Meu Progresso</h3>
-            <p className="text-xs text-muted-foreground mb-3">Assessment, kickoff, metas e registros do período</p>
-            <p className="text-sm font-semibold text-accent">{records.length} registro{records.length !== 1 ? "s" : ""} no período</p>
-          </Card>
-
-          <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setLocation("/novo-registro")}>
-            <div className="flex items-start justify-between mb-3">
-              <Plus size={24} className="text-accent" />
-              <ChevronRight size={20} className="text-muted-foreground" />
-            </div>
-            <h3 className="font-bold text-foreground mb-1">Novo Registro</h3>
-            <p className="text-xs text-muted-foreground mb-3">Registre um fato com flag verde, amarela ou vermelha</p>
-            <p className="text-sm font-semibold text-accent">Salvar como rascunho ou publicar</p>
-          </Card>
-
-          <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setLocation("/dashboard-pessoal")}>
-            <div className="flex items-start justify-between mb-3">
-              <Zap size={24} className="text-accent" />
-              <ChevronRight size={20} className="text-muted-foreground" />
-            </div>
-            <h3 className="font-bold text-foreground mb-1">Dashboard Pessoal</h3>
-            <p className="text-xs text-muted-foreground mb-3">Métricas, evolução e análise do período</p>
-            <p className="text-sm font-semibold text-accent">Análise de desenvolvimento</p>
-          </Card>
-
-          {isManager && (
-            <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setLocation("/meu-time")}>
-              <div className="flex items-start justify-between mb-3">
-                <Users size={24} className="text-accent" />
-                <ChevronRight size={20} className="text-muted-foreground" />
-              </div>
-              <h3 className="font-bold text-foreground mb-1">Meu Time</h3>
-              <p className="text-xs text-muted-foreground mb-3">Acompanhe os períodos dos seus geridos</p>
-              <p className="text-sm font-semibold text-accent">Registros e reuniões</p>
-            </Card>
-          )}
-
-          {isExecutive && (
-            <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setLocation("/dashboards")}>
-              <div className="flex items-start justify-between mb-3">
-                <BarChart3 size={24} className="text-accent" />
-                <ChevronRight size={20} className="text-muted-foreground" />
-              </div>
-              <h3 className="font-bold text-foreground mb-1">Dashboards</h3>
-              <p className="text-xs text-muted-foreground mb-3">Visão organizacional dos períodos</p>
-              <p className="text-sm font-semibold text-accent">Métricas globais</p>
-            </Card>
-          )}
-
-          <Card
-            className="cursor-pointer hover:shadow-md transition-shadow opacity-80 border-dashed"
-            onClick={() => setLocation("/mapa-desenvolvimento")}
-          >
-            <div className="flex items-start justify-between mb-3">
-              <Map size={24} className="text-accent" />
-              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">Em breve</span>
-            </div>
-            <h3 className="font-bold text-foreground mb-1">Mapa de Desenvolvimento</h3>
-            <p className="text-xs text-muted-foreground mb-3">Visão integrada da sua jornada</p>
-            <p className="text-sm font-semibold text-muted-foreground">Em desenvolvimento</p>
-          </Card>
-        </div>
-      </div>
-
-      <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900">
-        <p>
-          <strong>Modo MOCK:</strong> Todos os dados são salvos localmente no seu navegador. Ao conectar a um backend real, os dados serão sincronizados com o servidor.
-        </p>
+      <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900">
+        <strong>Modo MOCK:</strong> Todos os dados são salvos localmente no navegador. Integração futura com Supabase/n8n.
       </div>
     </DashboardLayout>
   );
